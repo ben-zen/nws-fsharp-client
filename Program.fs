@@ -3,6 +3,7 @@
 
 open Newtonsoft.Json.Linq
 open System
+open System.Linq
 open System.Net.Http
 
 let selectToken (obj : JObject) path =
@@ -22,6 +23,30 @@ let makeRequest (httpClient : HttpClient) (requestUri : string) =
             return responseContent
     }
 
+let expandValue (value : JToken) =
+    (value.Value<string>("validTime"), value.Value<string>("value"))
+
+let parseForecastResponse (forecast : JObject) =
+    // We have some set of days and times. Start with daily weather, and add
+    // hourly as we go.
+    // Daily forecast!
+    let minimumTemps = Seq.map expandValue (forecast.SelectTokens("$.minTemperature.values[*]"))
+    let maximumTemps = Seq.map expandValue (forecast.SelectTokens("$.maxTemperature.values[*]"))
+    // weather is a rich object, with a value that's a bit more significant.
+    Seq.iter2 (fun (timeMin, minTemp) (timeMax, maxTemp) -> (printfn "%s: Low: %s High: %s" timeMin minTemp maxTemp)) minimumTemps maximumTemps
+    // Hourly forecast:
+    // temperature
+    // dewpoint
+    // relativeHumidity
+    // apparentTemperature
+    // heatIndex
+    // windChill (misses data sometimes)
+    // skyCover (6 hours)
+    // windDirection (uneven hours)
+    // windSpeed
+    // windGust
+    //
+
 [<EntryPoint>]
 let main argv =
     printfn "NWS Client"
@@ -39,15 +64,19 @@ let main argv =
     let gridX = Option.map string (selectToken pointData "$.gridX")
     let gridY = Option.map string (selectToken pointData "$.gridY")
     // build the URI to request
-    let gridpointEndpoint = Option.map3 (sprintf "./gridpoints/%s/%s,%s/forecast") officeName gridX gridY
+    let gridpointEndpoint = Option.map3 (sprintf "./gridpoints/%s/%s,%s") officeName gridX gridY
     match gridpointEndpoint with
     | Some(uri) -> printfn "Making a request to %s for the weather forecast" uri
     | None -> printfn "No Uri could be constructed."
 
-    let forecast = Option.map (makeRequest httpClient) gridpointEndpoint |> Option.map Async.RunSynchronously
-    match forecast with
-    | Some(weatherForecast)  -> 
-        printfn "%s" weatherForecast 
+    let forecastOption 
+        = Option.map (makeRequest httpClient) gridpointEndpoint 
+            |> Option.map Async.RunSynchronously
+            |> Option.map JObject.Parse
+    match forecastOption with
+    | Some(weatherForecast)  ->
+        parseForecastResponse weatherForecast
+    // printfn "%s" weatherForecast 
     | None -> printfn "No weather forecast retrieved"
 
     0 // return an integer exit code
