@@ -47,17 +47,42 @@ let parseForecastResponse (forecast : JObject) =
     // windGust
     //
 
-[<EntryPoint>]
-let main argv =
-    printfn "NWS Client"
-    
+type Argument = 
+  | Verbose
+  | Test of string
+
+
+let rec parse_arguments_internal (args : string list) results =
+  match args with
+  | [] -> results
+  | arg :: more ->
+    match arg.ToLowerInvariant() with
+    | "-verbose" ->  parse_arguments_internal more (Argument.Verbose :: results)
+    | "-test" ->
+      match more with
+      | [] -> raise (ArgumentException "-test must be followed by a filename")
+      | file :: addl -> parse_arguments_internal addl (Argument.Test(file) :: results)
+    | _ -> raise (ArgumentException ("Unrecognized parameter supplied: " + arg))
+
+let parse_arguments argv =
+  parse_arguments_internal argv []
+
+let load_data test_option =
+  match test_option with
+  | Some(Test(test_file)) ->
+    printfn "Loading JSON data file from %s" test_file
+    None// Open the file
+  | Some(_) -> None
+  | None ->
     let httpClient = new HttpClient ()
     httpClient.BaseAddress <- Uri ("https://api.weather.gov")
     httpClient.DefaultRequestHeaders.Accept.Add (Headers.MediaTypeWithQualityHeaderValue ("application/ld+json"))
     httpClient.DefaultRequestHeaders.UserAgent.Add (Headers.ProductInfoHeaderValue ("zen-nws-client", "0.1"))
     httpClient.DefaultRequestHeaders.UserAgent.Add (Headers.ProductInfoHeaderValue ("(benjf5+nws@gmail.com)"))
     printfn "Getting basic data for Redmond City Hall:"
-    let pointText = makeRequest httpClient "./points/47.678878,-122.130496" |> Async.RunSynchronously
+    let pointText =
+      makeRequest httpClient "./points/47.678878,-122.130496"
+      |> Async.RunSynchronously
     let pointData = JObject.Parse pointText
     let officeName = Option.map string (selectToken pointData "$.cwa")
     // get the grid point for the office
@@ -69,11 +94,23 @@ let main argv =
     | Some(uri) -> printfn "Making a request to %s for the weather forecast" uri
     | None -> printfn "No Uri could be constructed."
 
-    let forecastOption 
-        = Option.map (makeRequest httpClient) gridpointEndpoint 
-            |> Option.map Async.RunSynchronously
-            |> Option.map JObject.Parse
-    match forecastOption with
+    Option.map (makeRequest httpClient) gridpointEndpoint 
+    |> Option.map Async.RunSynchronously
+
+
+[<EntryPoint>]
+let main argv =
+    printfn "NWS Client"
+    
+    let arguments = parse_arguments (List.ofArray argv)
+    let testArgument = 
+      List.tryFind (fun arg ->
+                      match arg with
+                      | Argument.Test _ -> true
+                      | _ -> false) arguments
+    
+    let data = load_data testArgument
+    match (Option.map JObject.Parse data) with
     | Some(weatherForecast)  ->
         parseForecastResponse weatherForecast
     // printfn "%s" weatherForecast 
