@@ -3,6 +3,7 @@
 
 open Newtonsoft.Json.Linq
 open System
+open System.IO
 open System.Linq
 open System.Net.Http
 
@@ -29,6 +30,7 @@ let expandValue (value : JToken) =
 let parseForecastResponse (forecast : JObject) =
     // We have some set of days and times. Start with daily weather, and add
     // hourly as we go.
+    forecast.Properties () |> Seq.map (fun x -> (string) x) |> Seq.iter (printfn "Property: %s")
     // Daily forecast!
     let minimumTemps = Seq.map expandValue (forecast.SelectTokens("$.minTemperature.values[*]"))
     let maximumTemps = Seq.map expandValue (forecast.SelectTokens("$.maxTemperature.values[*]"))
@@ -50,28 +52,38 @@ let parseForecastResponse (forecast : JObject) =
 type Argument = 
   | Verbose
   | Test of string
-
+  | OutFile of string
 
 let rec parse_arguments_internal (args : string list) results =
   match args with
   | [] -> results
   | arg :: more ->
     match arg.ToLowerInvariant() with
-    | "-verbose" ->  parse_arguments_internal more (Argument.Verbose :: results)
+    | "-verbose" ->  parse_arguments_internal more (Verbose :: results)
     | "-test" ->
       match more with
       | [] -> raise (ArgumentException "-test must be followed by a filename")
-      | file :: addl -> parse_arguments_internal addl (Argument.Test(file) :: results)
+      | file :: addl -> parse_arguments_internal addl (Test(file) :: results)
+    | "-out" ->
+      match more with
+      | [] -> raise (ArgumentException "-out must be followed by a filename")
+      | file :: addl -> parse_arguments_internal addl (OutFile(file) :: results)
     | _ -> raise (ArgumentException ("Unrecognized parameter supplied: " + arg))
 
 let parse_arguments argv =
   parse_arguments_internal argv []
 
+let argument_path arg =
+  match arg with
+  | Verbose -> None
+  | Test(test_path) -> Some(test_path)
+  | OutFile(out_path) -> Some(out_path)
+
 let load_data test_option =
   match test_option with
   | Some(Test(test_file)) ->
     printfn "Loading JSON data file from %s" test_file
-    None// Open the file
+    Some(File.ReadAllText(test_file))
   | Some(_) -> None
   | None ->
     let httpClient = new HttpClient ()
@@ -97,7 +109,6 @@ let load_data test_option =
     Option.map (makeRequest httpClient) gridpointEndpoint 
     |> Option.map Async.RunSynchronously
 
-
 [<EntryPoint>]
 let main argv =
     printfn "NWS Client"
@@ -106,13 +117,24 @@ let main argv =
     let testArgument = 
       List.tryFind (fun arg ->
                       match arg with
-                      | Argument.Test _ -> true
+                      | Test _ -> true
                       | _ -> false) arguments
     
     let data = load_data testArgument
+
     match (Option.map JObject.Parse data) with
     | Some(weatherForecast)  ->
         parseForecastResponse weatherForecast
+        let outFile = List.tryFind (fun arg ->
+                                     match arg with
+                                     | OutFile _ -> true
+                                     | _ -> false) argument
+                      |> Option.map argument_path
+        match outFile with
+        | None -> ()
+        | Some(out_path) -> 
+           printfn "Writing out retrieved forecast to %s" out_path
+          Option.map2 (fun x y -> File.WriteAllText (x, y)) out_path data |> ignore
     // printfn "%s" weatherForecast 
     | None -> printfn "No weather forecast retrieved"
 
