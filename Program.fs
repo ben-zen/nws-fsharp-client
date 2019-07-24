@@ -24,18 +24,26 @@ let makeRequest (httpClient : HttpClient) (requestUri : string) =
             return responseContent
     }
 
+type ForecastDuration = {time: DateTime; duration: TimeSpan}
+
+let parse_forecast_time (time_string : string) = 
+  time_string.Split("/") |> Array.toList |>
+    fun x -> match x with
+             | t :: [d] -> { time = DateTime.Parse t; duration = TimeSpan.Parse d }
+             | _ -> raise (ArgumentException ("Unexpected forecast time string provided: " + time_string))
+
 let expandValue (value : JToken) =
-    (value.Value<string>("validTime"), value.Value<string>("value"))
+    (parse_forecast_time (value.Value<string>("validTime")), value.Value<string>("value"))
 
 let parseForecastResponse (forecast : JObject) =
     // We have some set of days and times. Start with daily weather, and add
     // hourly as we go.
     forecast.Properties () |> Seq.map (fun x -> (string) x) |> Seq.iter (printfn "Property: %s")
     // Daily forecast!
-    let minimumTemps = Seq.map expandValue (forecast.SelectTokens("$.minTemperature.values[*]"))
-    let maximumTemps = Seq.map expandValue (forecast.SelectTokens("$.maxTemperature.values[*]"))
+    let minimumTemps = forecast.SelectTokens("$.minTemperature.values[*]") |> Seq.map expandValue
+    let maximumTemps = forecast.SelectTokens("$.maxTemperature.values[*]") |> Seq.map expandValue
     // weather is a rich object, with a value that's a bit more significant.
-    Seq.iter2 (fun (timeMin, minTemp) (timeMax, maxTemp) -> (printfn "%s: Low: %s High: %s" timeMin minTemp maxTemp)) minimumTemps maximumTemps
+    Seq.iter2 (fun (timeMin, minTemp) (timeMax, maxTemp) -> (printfn "%s: Low: %s, %s High: %s" (timeMin.ToString()) minTemp (timeMax.ToString()) maxTemp)) minimumTemps maximumTemps
     // Hourly forecast:
     // temperature
     // dewpoint
@@ -78,6 +86,8 @@ let argument_path arg =
   | Verbose -> None
   | Test(test_path) -> Some(test_path)
   | OutFile(out_path) -> Some(out_path)
+
+
 
 let load_data test_option =
   match test_option with
@@ -123,19 +133,17 @@ let main argv =
     let data = load_data testArgument
 
     match (Option.map JObject.Parse data) with
-    | Some(weatherForecast)  ->
+    | Some(weatherForecast) ->
         parseForecastResponse weatherForecast
         let outFile = List.tryFind (fun arg ->
-                                     match arg with
-                                     | OutFile _ -> true
-                                     | _ -> false) argument
-                      |> Option.map argument_path
-        match outFile with
-        | None -> ()
-        | Some(out_path) -> 
-           printfn "Writing out retrieved forecast to %s" out_path
-          Option.map2 (fun x y -> File.WriteAllText (x, y)) out_path data |> ignore
-    // printfn "%s" weatherForecast 
+                                      match arg with
+                                      | OutFile _ -> true
+                                      | _ -> false) arguments
+                      |> Option.bind argument_path
+        Option.iter
+          (fun path ->
+            printfn "Writing out retrieved forecast to %s" path
+            Option.iter (fun x -> File.WriteAllText (path, x)) data) outFile
     | None -> printfn "No weather forecast retrieved"
 
     0 // return an integer exit code
