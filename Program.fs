@@ -6,6 +6,7 @@ open System
 open System.IO
 open System.Linq
 open System.Net.Http
+open System.Xml
 
 let selectToken (obj : JObject) path =
     match obj.SelectToken path with
@@ -29,21 +30,21 @@ type ForecastDuration = {time: DateTime; duration: TimeSpan}
 let parse_forecast_time (time_string : string) = 
   time_string.Split("/") |> Array.toList |>
     fun x -> match x with
-             | t :: [d] -> { time = DateTime.Parse t; duration = TimeSpan.Parse d }
+             | t :: [d] -> { time = DateTime.Parse t; duration = XmlConvert.ToTimeSpan d  }
              | _ -> raise (ArgumentException ("Unexpected forecast time string provided: " + time_string))
 
-let expandValue (value : JToken) =
-    (parse_forecast_time (value.Value<string>("validTime")), value.Value<string>("value"))
+let expandValue parse_fn (value : JToken) =
+    (parse_forecast_time (value.Value<string>("validTime")), parse_fn (value.Value<string>("value")))
 
 let parseForecastResponse (forecast : JObject) =
     // We have some set of days and times. Start with daily weather, and add
     // hourly as we go.
     forecast.Properties () |> Seq.map (fun x -> (string) x) |> Seq.iter (printfn "Property: %s")
     // Daily forecast!
-    let minimumTemps = forecast.SelectTokens("$.minTemperature.values[*]") |> Seq.map expandValue
-    let maximumTemps = forecast.SelectTokens("$.maxTemperature.values[*]") |> Seq.map expandValue
+    let minimumTemps = forecast.SelectTokens("$.minTemperature.values[*]") |> Seq.map (expandValue Double.Parse)
+    let maximumTemps = forecast.SelectTokens("$.maxTemperature.values[*]") |> Seq.map (expandValue Double.Parse)
     // weather is a rich object, with a value that's a bit more significant.
-    Seq.iter2 (fun (timeMin, minTemp) (timeMax, maxTemp) -> (printfn "%s: Low: %s, %s High: %s" (timeMin.ToString()) minTemp (timeMax.ToString()) maxTemp)) minimumTemps maximumTemps
+    Seq.iter2 (fun (timeMin, minTemp) (timeMax, maxTemp) -> (printfn "%O: Low: %.1f, %O: High: %.1f" (timeMin.ToString()) minTemp (timeMax.ToString()) maxTemp)) minimumTemps maximumTemps
     // Hourly forecast:
     // temperature
     // dewpoint
