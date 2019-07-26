@@ -3,8 +3,10 @@
 
 open Newtonsoft.Json.Linq
 open System
+open System.IO
 open System.Linq
 open System.Net.Http
+open System.Xml
 
 let selectToken (obj : JObject) path =
     match obj.SelectToken path with
@@ -23,17 +25,26 @@ let makeRequest (httpClient : HttpClient) (requestUri : string) =
             return responseContent
     }
 
-let expandValue (value : JToken) =
-    (value.Value<string>("validTime"), value.Value<string>("value"))
+type ForecastDuration = {time: DateTime; duration: TimeSpan}
+
+let parse_forecast_time (time_string : string) = 
+  time_string.Split("/") |> Array.toList |>
+    fun x -> match x with
+             | t :: [d] -> { time = DateTime.Parse t; duration = XmlConvert.ToTimeSpan d  }
+             | _ -> raise (ArgumentException ("Unexpected forecast time string provided: " + time_string))
+
+let expandValue parse_fn (value : JToken) =
+    (parse_forecast_time (value.Value<string>("validTime")), parse_fn (value.Value<string>("value")))
 
 let parseForecastResponse (forecast : JObject) =
     // We have some set of days and times. Start with daily weather, and add
     // hourly as we go.
+    forecast.Properties () |> Seq.map (fun x -> (string) x) |> Seq.iter (printfn "Property: %s")
     // Daily forecast!
-    let minimumTemps = Seq.map expandValue (forecast.SelectTokens("$.minTemperature.values[*]"))
-    let maximumTemps = Seq.map expandValue (forecast.SelectTokens("$.maxTemperature.values[*]"))
+    let minimumTemps = forecast.SelectTokens("$.minTemperature.values[*]") |> Seq.map (expandValue Double.Parse)
+    let maximumTemps = forecast.SelectTokens("$.maxTemperature.values[*]") |> Seq.map (expandValue Double.Parse)
     // weather is a rich object, with a value that's a bit more significant.
-    Seq.iter2 (fun (timeMin, minTemp) (timeMax, maxTemp) -> (printfn "%s: Low: %s High: %s" timeMin minTemp maxTemp)) minimumTemps maximumTemps
+    Seq.iter2 (fun (timeMin, minTemp) (timeMax, maxTemp) -> (printfn "%O: Low: %.1f, %O: High: %.1f" (timeMin.ToString()) minTemp (timeMax.ToString()) maxTemp)) minimumTemps maximumTemps
     // Hourly forecast:
     // temperature
     // dewpoint
@@ -50,28 +61,40 @@ let parseForecastResponse (forecast : JObject) =
 type Argument = 
   | Verbose
   | Test of string
-
+  | OutFile of string
 
 let rec parse_arguments_internal (args : string list) results =
   match args with
   | [] -> results
   | arg :: more ->
     match arg.ToLowerInvariant() with
-    | "-verbose" ->  parse_arguments_internal more (Argument.Verbose :: results)
+    | "-verbose" ->  parse_arguments_internal more (Verbose :: results)
     | "-test" ->
       match more with
       | [] -> raise (ArgumentException "-test must be followed by a filename")
-      | file :: addl -> parse_arguments_internal addl (Argument.Test(file) :: results)
+      | file :: addl -> parse_arguments_internal addl (Test(file) :: results)
+    | "-out" ->
+      match more with
+      | [] -> raise (ArgumentException "-out must be followed by a filename")
+      | file :: addl -> parse_arguments_internal addl (OutFile(file) :: results)
     | _ -> raise (ArgumentException ("Unrecognized parameter supplied: " + arg))
 
 let parse_arguments argv =
   parse_arguments_internal argv []
 
+let argument_path arg =
+  match arg with
+  | Verbose -> None
+  | Test(test_path) -> Some(test_path)
+  | OutFile(out_path) -> Some(out_path)
+
+
+
 let load_data test_option =
   match test_option with
   | Some(Test(test_file)) ->
     printfn "Loading JSON data file from %s" test_file
-    None// Open the file
+    Some(File.ReadAllText(test_file))
   | Some(_) -> None
   | None ->
     let httpClient = new HttpClient ()
@@ -97,7 +120,6 @@ let load_data test_option =
     Option.map (makeRequest httpClient) gridpointEndpoint 
     |> Option.map Async.RunSynchronously
 
-
 [<EntryPoint>]
 let main argv =
     printfn "NWS Client"
@@ -106,14 +128,23 @@ let main argv =
     let testArgument = 
       List.tryFind (fun arg ->
                       match arg with
-                      | Argument.Test _ -> true
+                      | Test _ -> true
                       | _ -> false) arguments
     
     let data = load_data testArgument
+
     match (Option.map JObject.Parse data) with
-    | Some(weatherForecast)  ->
+    | Some(weatherForecast) ->
         parseForecastResponse weatherForecast
-    // printfn "%s" weatherForecast 
+        let outFile = List.tryFind (fun arg ->
+                                      match arg with
+                                      | OutFile _ -> true
+                                      | _ -> false) arguments
+                      |> Option.bind argument_path
+        Option.iter
+          (fun path ->
+            printfn "Writing out retrieved forecast to %s" path
+            Option.iter (fun x -> File.WriteAllText (path, x)) data) outFile
     | None -> printfn "No weather forecast retrieved"
 
     0 // return an integer exit code
